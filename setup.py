@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name='vectormorph',
-    version='0.1.1',
+    version='0.1.2',
     author='Collin Paran',
     description='A lightweight vector database.',
     long_description=long_description,

@@ -1,0 +1,15 @@
+version: '3.8'
+services:
+  vectormorph-example:
+    build:
+      context: ./docker_example
+      dockerfile: python.Dockerfile
+    restart: always
+    container_name: vectormorph-example
+    privileged: true
+    user: root
+    volumes:
+      - ./vectormorph-example:/vectormorph-example
+    entrypoint: ["serve", "vectormorph"]
+    ports:
+      - '4440:4440'

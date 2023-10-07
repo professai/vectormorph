@@ -1,8 +1,12 @@
+import os
+import signal
+import subprocess
+import sys
+import threading
 import hnswlib
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import numpy as np
-import os
 from typing import List
 import time
 from datetime import datetime
@@ -10,7 +14,7 @@ from datetime import datetime
 app = FastAPI(
     title="VectorMorph",
     description="A lightweight hypervector or vector of vectors database.",
-    version="0.1.1",
+    version="0.1.2",
 )
 
 security = HTTPBearer()
@@ -28,22 +32,27 @@ def timer_dependency():
     yield execution_time
 
 class VectorDatabase:
-    def __init__(self, dim, space='cosine'):
-        self.space = space
-        self.dim = dim
-        self.index = hnswlib.Index(space=self.space, dim=self.dim)
-        self.index.init_index(max_elements=10000, ef_construction=200, M=16)
-        self.summary_vectors = []
+    def __init__(self):
+        self.index = None
         self.document_vectors = []
-        self.load()
-    
+        self.dim = None  # Dimensionality will be set dynamically
+
     def add_vector(self, summary_vector, document_vector):
-        idx = len(self.summary_vectors)
-        self.index.add_items(summary_vector, idx)
-        self.summary_vectors.append(summary_vector)
+        # Determine the dimensionality dynamically if this is the first vector
+        if self.index is None:
+            self.dim = len(summary_vector)
+            self.index = hnswlib.Index(space='cosine', dim=self.dim)
+
+        # Check that the vectors have the correct dimensionality
+        if len(summary_vector) != self.dim or len(document_vector) != self.dim:
+            raise ValueError(f"Vectors must have dimensionality {self.dim}")
+
+        # Add the vectors to the database
+        idx = len(self.document_vectors)
+        self.index.add_items(np.array([summary_vector]), np.array([idx]))
         self.document_vectors.append(document_vector)
         return idx
-
+    
     def update_vector(self, idx, summary_vector, document_vector):
         self.summary_vectors[idx] = summary_vector
         self.document_vectors[idx] = document_vector
@@ -71,8 +80,7 @@ class VectorDatabase:
             self.summary_vectors = np.load('bin/summary_vectors.bin').tolist()
             self.document_vectors = np.load('bin/document_vectors.bin').tolist()
 
-
-db = VectorDatabase(dim=128)
+db = VectorDatabase()
 
 @app.post("/add/", tags=["CRUD Operations"], summary="Add Vector", description="Add summary and document vectors to the database.")
 async def add_vector(
@@ -80,7 +88,7 @@ async def add_vector(
         document_vector: List[float],
         user: str = Depends(get_current_user),
         execution_time: float = Depends(timer_dependency)):
-    idx = db.add_vector(np.array([summary_vector]), np.array([document_vector]))
+    idx = db.add_vector(summary_vector, document_vector)
     timestamp = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
     return {"index": idx, "timestamp": timestamp, "execution_time": execution_time}
 
@@ -116,9 +124,26 @@ async def search(
     timestamp = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
     return {"results": detailed_results, "timestamp": timestamp, "execution_time": execution_time}
 
+def shutdown():
+    os.kill(os.getpid(), signal.SIGTERM)
+
+def reboot():
+    os.execv(sys.executable, ['python'] + sys.argv)
+
+@app.post("/shutdown/", tags=["Server Control"], summary="Shutdown Server", description="Shutdown the VectorMorph server.")
+async def shutdown_server(background_tasks: BackgroundTasks):
+    background_tasks.add_task(shutdown)
+    return {"message": "Shutting down..."}
+
+@app.post("/reboot/", tags=["Server Control"], summary="Reboot Server", description="Reboot the VectorMorph server.")
+async def reboot_server(background_tasks: BackgroundTasks):
+    background_tasks.add_task(reboot)
+    return {"message": "Rebooting..."}
+
 def main():
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=4440)
+    global server_process
+    server_process = subprocess.Popen(['uvicorn', 'vectormorph.vector_morph:app', '--host', '0.0.0.0', '--port', '4440'])
+    server_process.wait()
 
 if __name__ == "__main__":
     main()
