@@ -1,0 +1,10 @@
+openai
+openai[datalib]
+fastapi
+starlette
+requests
+uvicorn
+tiktoken
+pydantic
+numpy
+pandas

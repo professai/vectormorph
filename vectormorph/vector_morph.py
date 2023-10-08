@@ -11,10 +11,12 @@ from typing import List
 import time
 from datetime import datetime
 
+parent_dir_path = os.path.dirname(os.path.realpath(__file__))
+
 app = FastAPI(
     title="VectorMorph",
     description="A lightweight hypervector or vector of vectors database.",
-    version="0.1.2",
+    version="0.1.3",
 )
 
 security = HTTPBearer()
@@ -70,15 +72,15 @@ class VectorDatabase:
         return indices, distances
 
     def save(self):
-        self.index.save_index('bin/index.bin')
-        np.save('bin/summary_vectors.bin', self.summary_vectors)
-        np.save('bin/document_vectors.bin', self.document_vectors)
+        self.index.save_index(f'{parent_dir_path}/bin/index.bin')
+        np.save(f'{parent_dir_path}/bin/summary_vectors.bin', self.summary_vectors)
+        np.save(f'{parent_dir_path}/bin/document_vectors.bin', self.document_vectors)
 
     def load(self):
-        if os.path.exists('bin/index.bin'):
-            self.index.load_index('bin/index.bin')
-            self.summary_vectors = np.load('bin/summary_vectors.bin').tolist()
-            self.document_vectors = np.load('bin/document_vectors.bin').tolist()
+        if os.path.exists(f'{parent_dir_path}/bin/index.bin'):
+            self.index.load_index(f'{parent_dir_path}/bin/index.bin')
+            self.summary_vectors = np.load(f'{parent_dir_path}/bin/summary_vectors.bin').tolist()
+            self.document_vectors = np.load(f'{parent_dir_path}/bin/document_vectors.bin').tolist()
 
 db = VectorDatabase()
 
@@ -131,12 +133,18 @@ def reboot():
     os.execv(sys.executable, ['python'] + sys.argv)
 
 @app.post("/shutdown/", tags=["Server Control"], summary="Shutdown Server", description="Shutdown the VectorMorph server.")
-async def shutdown_server(background_tasks: BackgroundTasks):
+async def shutdown_server(
+    background_tasks: BackgroundTasks,
+    user: str = Depends(get_current_user)
+    ):
     background_tasks.add_task(shutdown)
     return {"message": "Shutting down..."}
 
 @app.post("/reboot/", tags=["Server Control"], summary="Reboot Server", description="Reboot the VectorMorph server.")
-async def reboot_server(background_tasks: BackgroundTasks):
+async def reboot_server(
+    background_tasks: BackgroundTasks,
+    user: str = Depends(get_current_user)
+    ):
     background_tasks.add_task(reboot)
     return {"message": "Rebooting..."}
 
