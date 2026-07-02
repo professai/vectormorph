@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   vectormorph-example:
     build:
@@ -6,11 +5,12 @@ services:
       dockerfile: database.Dockerfile
     restart: always
     container_name: vectormorph-example
-    privileged: true
-    user: root
+    env_file:
+      - .env
     volumes:
-      - ./example_database:/example_database
-    entrypoint: ["serve", "vectormorph"]
+      - vectormorph-data:/data
+    environment:
+      - VECTORMORPH_DATA_DIR=/data
     ports:
       - '4440:4440'
   client-example:
@@ -19,12 +19,12 @@ services:
       dockerfile: client.Dockerfile
     restart: always
     container_name: client-example
-    privileged: true
-    user: root
     env_file:
-      - prod.env
-    volumes:
-      - ./example_client:/example_client
-    entrypoint: "python app.py"
+      - .env
+    depends_on:
+      - vectormorph-example
     ports:
       - '80:80'
+
+volumes:
+  vectormorph-data:

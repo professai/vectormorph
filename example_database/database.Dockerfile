@@ -1,8 +1,9 @@
-FROM python:3.10-buster
+FROM python:3.11-slim
 
-ENV BEARER_TOKEN=1234
-COPY ./ ./app/
 WORKDIR /app
-RUN pip install -U vectormorph
+
+RUN pip install --no-cache-dir vectormorph
 
 EXPOSE 4440
+
+CMD ["vectormorph"]
