@@ -13,7 +13,7 @@ def configure(monkeypatch, tmp_path):
     monkeypatch.setenv("BEARER_TOKEN", TOKEN)
     fresh = VectorDatabase(data_dir=str(tmp_path))
     # Swap the module-level database for a fresh, tmp-backed one per test.
-    for attr in ("index", "summary_vectors", "document_vectors", "deleted", "dim", "data_dir"):
+    for attr in ("index", "summary_vectors", "document_vectors", "metadata", "deleted", "dim", "data_dir"):
         setattr(db, attr, getattr(fresh, attr))
     yield
 
@@ -90,7 +90,7 @@ class TestVectorDatabase:
 
     def test_save_and_load_round_trip(self, tmp_path):
         d = VectorDatabase(data_dir=str(tmp_path / "store"))
-        d.add_vector([1.0, 0.0], [1.0, 0.0])
+        d.add_vector([1.0, 0.0], [1.0, 0.0], metadata={"title": "first"})
         d.add_vector([0.0, 1.0], [0.0, 1.0])
         d.delete_vector(1)
         d.save()
@@ -99,8 +99,31 @@ class TestVectorDatabase:
         assert restored.load() is True
         assert restored.dim == 2
         assert restored.count == 1
+        assert restored.metadata[0] == {"title": "first"}
         indices, _ = restored.search([1.0, 0.0], k=1)
         assert indices.flatten().tolist() == [0]
+
+    def test_add_batch(self):
+        d = VectorDatabase()
+        indices = d.add_vectors(
+            [
+                ([1.0, 0.0], [1.0, 0.0], {"n": 1}),
+                ([0.0, 1.0], [0.0, 1.0], None),
+            ]
+        )
+        assert indices == [0, 1]
+        assert d.count == 2
+        assert d.metadata == [{"n": 1}, None]
+
+    def test_get_vector(self):
+        d = VectorDatabase()
+        d.add_vector([1.0, 0.0], [0.5, 0.5], metadata={"title": "doc"})
+        summary, document, metadata = d.get_vector(0)
+        assert summary == [1.0, 0.0]
+        assert document == [0.5, 0.5]
+        assert metadata == {"title": "doc"}
+        with pytest.raises(KeyError):
+            d.get_vector(1)
 
     def test_load_missing_returns_false(self, tmp_path):
         d = VectorDatabase(data_dir=str(tmp_path / "nothing"))
@@ -190,3 +213,64 @@ class TestAPI:
 
     def test_load_without_saved_data_is_404(self, client):
         assert client.post("/load/", headers=AUTH).status_code == 404
+
+    def test_metadata_round_trips_through_search(self, client):
+        client.post(
+            "/add/",
+            json={
+                "summary_vector": vec(1, 0),
+                "document_vector": vec(1, 0),
+                "metadata": {"title": "hello", "tags": ["a", "b"]},
+            },
+            headers=AUTH,
+        )
+        response = client.post(
+            "/search/", json={"query_vector": vec(1, 0), "k": 1}, headers=AUTH
+        )
+        assert response.status_code == 200
+        assert response.json()["results"][0]["metadata"] == {"title": "hello", "tags": ["a", "b"]}
+
+    def test_add_batch_endpoint(self, client):
+        response = client.post(
+            "/add_batch/",
+            json={
+                "items": [
+                    {"summary_vector": vec(1, 0), "document_vector": vec(1, 0)},
+                    {"summary_vector": vec(0, 1), "document_vector": vec(0, 1), "metadata": {"n": 2}},
+                ]
+            },
+            headers=AUTH,
+        )
+        assert response.status_code == 200
+        assert response.json()["indices"] == [0, 1]
+
+    def test_add_batch_empty_is_422(self, client):
+        response = client.post("/add_batch/", json={"items": []}, headers=AUTH)
+        assert response.status_code == 422
+
+    def test_get_endpoint(self, client):
+        add(client, vec(1, 0), vec(0.5, 0.5))
+        response = client.get("/get/0", headers=AUTH)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["summary_vector"] == [1.0, 0.0]
+        assert body["document_vector"] == [0.5, 0.5]
+        assert body["metadata"] is None
+
+        assert client.get("/get/7", headers=AUTH).status_code == 404
+
+    def test_autoload_on_startup(self, tmp_path, monkeypatch):
+        db.add_vector([1.0, 0.0], [1.0, 0.0], metadata={"title": "persisted"})
+        db.save()
+
+        # Simulate a fresh process: clear in-memory state, then run the
+        # lifespan (which auto-loads from db.data_dir).
+        db.index = None
+        db.summary_vectors, db.document_vectors, db.metadata = [], [], []
+        db.deleted, db.dim = set(), None
+
+        monkeypatch.setenv("VECTORMORPH_AUTOLOAD", "1")
+        with TestClient(app) as client:
+            response = client.get("/stats/", headers=AUTH)
+            assert response.json()["count"] == 1
+            assert db.metadata[0] == {"title": "persisted"}

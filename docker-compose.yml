@@ -1,8 +1,8 @@
 services:
   vectormorph-example:
     build:
-      context: ./example_database
-      dockerfile: database.Dockerfile
+      context: .
+      dockerfile: example_database/database.Dockerfile
     restart: always
     container_name: vectormorph-example
     env_file:

@@ -6,7 +6,8 @@ VectorMorph stores pairs of vectors: a **summary vector**, which is indexed with
 [hnswlib](https://github.com/nmslib/hnswlib) for fast approximate nearest-neighbour
 search, and a **document vector**, which is used to re-rank the candidates by exact
 similarity. This two-stage "hypervector" scheme lets you index short summaries while
-still ranking against full-document embeddings.
+still ranking against full-document embeddings. Each pair can carry arbitrary JSON
+metadata (document IDs, titles, source text, …) that is returned with search results.
 
 ## 🚀 Quick Install
 
@@ -34,6 +35,7 @@ The API is now available at `http://localhost:4440`, with interactive OpenAPI do
 | `VECTORMORPH_HOST`     | `0.0.0.0`            | Host interface to bind                       |
 | `VECTORMORPH_PORT`     | `4440`               | Port to listen on                            |
 | `VECTORMORPH_DATA_DIR` | `<package dir>/bin`  | Directory used by `/save/` and `/load/`      |
+| `VECTORMORPH_AUTOLOAD` | `1`                  | Load a previously saved database on startup (`0` disables) |
 
 ## 📖 API
 
@@ -43,7 +45,9 @@ All endpoints except `/health/` require an `Authorization: Bearer <token>` heade
 | -------- | --------------- | -------------------------------------------------------- |
 | `GET`    | `/health/`      | Liveness probe (no auth)                                 |
 | `GET`    | `/stats/`       | Vector count and dimensionality                          |
-| `POST`   | `/add/`         | Add a summary/document vector pair; returns its index    |
+| `POST`   | `/add/`         | Add a summary/document vector pair (with optional metadata); returns its index |
+| `POST`   | `/add_batch/`   | Add many vector pairs in one request                     |
+| `GET`    | `/get/{idx}`    | Return the vectors and metadata at an index              |
 | `PUT`    | `/update/{idx}` | Replace the vectors at an index                          |
 | `DELETE` | `/delete/{idx}` | Delete the vectors at an index                           |
 | `POST`   | `/search/`      | k-NN search on summary vectors, re-ranked by document vectors |
@@ -58,17 +62,38 @@ vectors must match it.
 ### Example
 
 ```bash
-# Add a vector pair
+# Add a vector pair with metadata
 curl -X POST http://localhost:4440/add/ \
   -H "Authorization: Bearer $BEARER_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"summary_vector": [0.1, 0.2, 0.3], "document_vector": [0.4, 0.5, 0.6]}'
+  -d '{"summary_vector": [0.1, 0.2, 0.3], "document_vector": [0.4, 0.5, 0.6], "metadata": {"title": "Doc 1"}}'
 
 # Search
 curl -X POST http://localhost:4440/search/ \
   -H "Authorization: Bearer $BEARER_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"query_vector": [0.1, 0.2, 0.3], "k": 5}'
+```
+
+## 🐍 Python Client
+
+The package ships with a small client for the REST API:
+
+```python
+from vectormorph import VectorMorphClient
+
+client = VectorMorphClient("http://localhost:4440", token="your-secret-token")
+
+idx = client.add(
+    summary_vector=[0.1, 0.2, 0.3],
+    document_vector=[0.4, 0.5, 0.6],
+    metadata={"title": "Doc 1"},
+)
+
+results = client.search([0.1, 0.2, 0.3], k=5)
+# [{"index": 0, "similarity": 0.32, "summary_distance": 0.0, "metadata": {"title": "Doc 1"}}]
+
+client.save()  # persist to disk; auto-loaded on the next server start
 ```
 
 ## 🐳 Docker Compose Example
