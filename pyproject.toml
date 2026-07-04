@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vectormorph"
-version = "0.3.0"
+version = "0.4.0"
 description = "A lightweight vector database."
 readme = "README.md"
 authors = [{ name = "Collin Paran" }]
@@ -39,6 +39,9 @@ Homepage = "https://github.com/professai/vectormorph"
 
 [tool.setuptools.packages.find]
 include = ["vectormorph*"]
+
+[tool.setuptools.package-data]
+vectormorph = ["dashboard.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,8 +1,10 @@
+import os
+
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from vectormorph.vector_morph import VectorDatabase, app, db
+from vectormorph.vector_morph import VectorDatabase, app, db, metrics
 
 TOKEN = "test-token"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -15,6 +17,7 @@ def configure(monkeypatch, tmp_path):
     # Swap the module-level database for a fresh, tmp-backed one per test.
     for attr in ("index", "summary_vectors", "document_vectors", "metadata", "deleted", "dim", "data_dir"):
         setattr(db, attr, getattr(fresh, attr))
+    metrics.reset()
     yield
 
 
@@ -65,8 +68,8 @@ class TestVectorDatabase:
         d.add_vector([1.0, 0.0], [1.0, 0.0])
         d.add_vector([0.0, 1.0], [0.0, 1.0])
         d.update_vector(0, [0.0, 1.0], [0.0, 1.0])
-        indices, _ = d.search([0.0, 1.0], k=2)
-        assert set(indices.flatten().tolist()) == {0, 1}
+        results = d.search([0.0, 1.0], k=2)
+        assert {r["index"] for r in results} == {0, 1}
 
     def test_update_missing_index_raises(self):
         d = VectorDatabase()
@@ -79,8 +82,8 @@ class TestVectorDatabase:
         d.add_vector([1.0, 0.0], [1.0, 0.0])
         d.add_vector([0.0, 1.0], [0.0, 1.0])
         d.delete_vector(0)
-        indices, _ = d.search([1.0, 0.0], k=2)
-        assert 0 not in indices.flatten().tolist()
+        results = d.search([1.0, 0.0], k=2)
+        assert 0 not in [r["index"] for r in results]
         assert d.count == 1
 
     def test_search_empty_raises(self):
@@ -100,8 +103,31 @@ class TestVectorDatabase:
         assert restored.dim == 2
         assert restored.count == 1
         assert restored.metadata[0] == {"title": "first"}
-        indices, _ = restored.search([1.0, 0.0], k=1)
-        assert indices.flatten().tolist() == [0]
+        results = restored.search([1.0, 0.0], k=1)
+        assert [r["index"] for r in results] == [0]
+
+    def test_save_leaves_no_temp_files(self, tmp_path):
+        d = VectorDatabase(data_dir=str(tmp_path / "store"))
+        d.add_vector([1.0, 0.0], [1.0, 0.0])
+        d.save()
+        leftovers = [f for f in os.listdir(tmp_path / "store") if f.endswith(".tmp")]
+        assert leftovers == []
+        assert sorted(os.listdir(tmp_path / "store")) == [
+            "document_vectors.npy", "index.bin", "metadata.json", "summary_vectors.npy",
+        ]
+
+    def test_info_snapshot(self):
+        d = VectorDatabase()
+        assert d.info() == {"count": 0, "total_slots": 0, "deleted": 0, "dim": None, "capacity": 0}
+        d.add_vector([1.0, 0.0], [1.0, 0.0])
+        d.add_vector([0.0, 1.0], [0.0, 1.0])
+        d.delete_vector(1)
+        info = d.info()
+        assert info["count"] == 1
+        assert info["total_slots"] == 2
+        assert info["deleted"] == 1
+        assert info["dim"] == 2
+        assert info["capacity"] >= 2
 
     def test_add_batch(self):
         d = VectorDatabase()
@@ -258,6 +284,35 @@ class TestAPI:
         assert body["metadata"] is None
 
         assert client.get("/get/7", headers=AUTH).status_code == 404
+
+    def test_metrics_endpoint(self, client):
+        add(client, vec(1, 0), vec(1, 0))
+        client.post("/search/", json={"query_vector": vec(1, 0)}, headers=AUTH)
+        response = client.get("/metrics/", headers=AUTH)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["uptime_seconds"] >= 0
+        assert body["totals"]["requests"] >= 2
+        assert body["database"]["count"] == 1
+        assert "POST /add/" in body["endpoints"]
+        add_stats = body["endpoints"]["POST /add/"]
+        assert add_stats["count"] >= 1
+        assert add_stats["p95_ms"] >= 0
+
+    def test_metrics_requires_auth(self, client):
+        response = client.get("/metrics/", headers={"Authorization": "Bearer wrong"})
+        assert response.status_code == 401
+
+    def test_metrics_counts_errors(self, client):
+        client.post("/search/", json={"query_vector": vec(1, 0)}, headers=AUTH)  # 404: empty db
+        body = client.get("/metrics/", headers=AUTH).json()
+        assert body["endpoints"]["POST /search/"]["errors_4xx"] == 1
+
+    def test_dashboard_served_without_auth(self, client):
+        response = client.get("/dashboard/")
+        assert response.status_code == 200
+        assert "text/html" in response.headers["content-type"]
+        assert "VectorMorph" in response.text
 
     def test_autoload_on_startup(self, tmp_path, monkeypatch):
         db.add_vector([1.0, 0.0], [1.0, 0.0], metadata={"title": "persisted"})

@@ -25,7 +25,9 @@ vectormorph
 ```
 
 The API is now available at `http://localhost:4440`, with interactive OpenAPI docs at
-`http://localhost:4440/docs`.
+`http://localhost:4440/docs` and a monitoring/control dashboard at
+`http://localhost:4440/dashboard/` (paste the bearer token into the page to see
+stats, request metrics, and use the save/load/reboot/shutdown controls).
 
 ### Configuration
 
@@ -44,7 +46,9 @@ All endpoints except `/health/` require an `Authorization: Bearer <token>` heade
 | Method   | Path            | Description                                              |
 | -------- | --------------- | -------------------------------------------------------- |
 | `GET`    | `/health/`      | Liveness probe (no auth)                                 |
-| `GET`    | `/stats/`       | Vector count and dimensionality                          |
+| `GET`    | `/dashboard/`   | Health & control dashboard (page is public; its data/controls need the token) |
+| `GET`    | `/stats/`       | Vector count, deleted count, dimensionality, capacity    |
+| `GET`    | `/metrics/`     | Uptime, request/error counts, latency percentiles per endpoint |
 | `POST`   | `/add/`         | Add a summary/document vector pair (with optional metadata); returns its index |
 | `POST`   | `/add_batch/`   | Add many vector pairs in one request                     |
 | `GET`    | `/get/{idx}`    | Return the vectors and metadata at an index              |

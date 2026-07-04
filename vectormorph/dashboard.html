@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VectorMorph Dashboard</title>
+<style>
+  :root {
+    --plane: #f9f9f7;
+    --surface: #fcfcfb;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --hairline: #e1e0d9;
+    --ring: rgba(11, 11, 11, 0.10);
+    --good: #0ca30c;
+    --warning: #fab219;
+    --critical: #d03b3b;
+    --accent: #2a78d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --plane: #0d0d0d;
+      --surface: #1a1a19;
+      --ink: #ffffff;
+      --ink-2: #c3c2b7;
+      --muted: #898781;
+      --hairline: #2c2c2a;
+      --ring: rgba(255, 255, 255, 0.10);
+      --accent: #3987e5;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--plane);
+    color: var(--ink);
+    padding: 24px;
+    max-width: 1080px;
+    margin: 0 auto;
+  }
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+  h1 { font-size: 20px; font-weight: 650; }
+  .version { color: var(--muted); font-size: 13px; }
+  .status { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
+  .status .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .status.ok { color: var(--good); }
+  .status.ok .dot { background: var(--good); }
+  .status.down { color: var(--critical); }
+  .status.down .dot { background: var(--critical); }
+  .status.unauth { color: var(--ink-2); }
+  .status.unauth .dot { background: var(--warning); }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--ring);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .auth { display: flex; gap: 8px; margin-bottom: 20px; align-items: center; flex-wrap: wrap; }
+  .auth label { font-size: 13px; color: var(--ink-2); }
+  input[type="password"] {
+    background: var(--surface); color: var(--ink);
+    border: 1px solid var(--hairline); border-radius: 6px;
+    padding: 7px 10px; font-size: 13px; min-width: 240px;
+  }
+  button {
+    background: var(--surface); color: var(--ink);
+    border: 1px solid var(--hairline); border-radius: 6px;
+    padding: 7px 14px; font-size: 13px; font-weight: 550; cursor: pointer;
+  }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--critical); border-color: var(--critical); }
+  button:disabled { opacity: 0.45; cursor: default; }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .tile .label { font-size: 12px; color: var(--ink-2); margin-bottom: 6px; }
+  .tile .value { font-size: 26px; font-weight: 600; line-height: 1.1; }
+  .tile .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .tile .value.bad { color: var(--critical); }
+
+  h2 { font-size: 14px; font-weight: 650; margin: 24px 0 10px; }
+  .tablewrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--hairline); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; font-family: ui-monospace, monospace; font-size: 12px; }
+  th { color: var(--muted); font-weight: 550; font-size: 12px; }
+  td { font-variant-numeric: tabular-nums; color: var(--ink-2); }
+  td.err { color: var(--critical); font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; }
+  .msg { font-size: 12px; color: var(--muted); margin-top: 10px; min-height: 16px; }
+  .footer { color: var(--muted); font-size: 12px; margin-top: 16px; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>VectorMorph</h1>
+  <span class="version" id="version"></span>
+  <span class="status unauth" id="status"><span class="dot"></span><span id="status-text">Not connected</span></span>
+</header>
+
+<div class="auth card">
+  <label for="token">Bearer token</label>
+  <input type="password" id="token" placeholder="BEARER_TOKEN" autocomplete="off">
+  <button class="primary" id="connect">Connect</button>
+  <span class="msg" id="auth-msg"></span>
+</div>
+
+<div class="tiles" id="tiles">
+  <div class="tile card"><div class="label">Uptime</div><div class="value" id="t-uptime">–</div></div>
+  <div class="tile card"><div class="label">Vectors</div><div class="value" id="t-count">–</div><div class="sub" id="t-count-sub"></div></div>
+  <div class="tile card"><div class="label">Dimensions</div><div class="value" id="t-dim">–</div><div class="sub" id="t-cap"></div></div>
+  <div class="tile card"><div class="label">Requests</div><div class="value" id="t-req">–</div></div>
+  <div class="tile card"><div class="label">Errors</div><div class="value" id="t-err">–</div><div class="sub" id="t-err-sub"></div></div>
+</div>
+
+<h2>Endpoints</h2>
+<div class="card tablewrap">
+  <table>
+    <thead><tr>
+      <th>Endpoint</th><th>Requests</th><th>4xx</th><th>5xx</th>
+      <th>Avg ms</th><th>p50 ms</th><th>p95 ms</th>
+    </tr></thead>
+    <tbody id="endpoint-rows"><tr><td colspan="7" style="text-align:center;color:var(--muted)">No data yet</td></tr></tbody>
+  </table>
+</div>
+
+<h2>Controls</h2>
+<div class="card">
+  <div class="controls">
+    <button id="btn-save" disabled>Save database</button>
+    <button id="btn-load" disabled>Load database</button>
+    <button id="btn-reboot" class="danger" disabled>Reboot server</button>
+    <button id="btn-shutdown" class="danger" disabled>Shutdown server</button>
+  </div>
+  <div class="msg" id="control-msg"></div>
+</div>
+
+<div class="footer">
+  Refreshes every 5 s · <span id="updated"></span> · <a href="/docs">OpenAPI docs</a>
+</div>
+
+<script>
+  let token = sessionStorage.getItem("vm_token") || "";
+  let timer = null;
+
+  const $ = (id) => document.getElementById(id);
+
+  function fmtUptime(s) {
+    if (s < 90) return Math.round(s) + "s";
+    if (s < 5400) return Math.round(s / 60) + "m";
+    if (s < 172800) return (s / 3600).toFixed(1) + "h";
+    return (s / 86400).toFixed(1) + "d";
+  }
+  function fmtCount(n) {
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+    if (n >= 1e4) return (n / 1e3).toFixed(1) + "K";
+    return String(n);
+  }
+
+  async function api(path, options) {
+    const response = await fetch(path, {
+      ...options,
+      headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
+    });
+    if (!response.ok) {
+      let detail = response.statusText;
+      try { detail = (await response.json()).detail || detail; } catch (e) { /* keep statusText */ }
+      throw new Error(response.status + ": " + detail);
+    }
+    return response.json();
+  }
+
+  function setStatus(cls, text) {
+    const el = $("status");
+    el.className = "status " + cls;
+    $("status-text").textContent = text;
+  }
+
+  function setControlsEnabled(on) {
+    for (const id of ["btn-save", "btn-load", "btn-reboot", "btn-shutdown"]) {
+      $(id).disabled = !on;
+    }
+  }
+
+  async function refresh() {
+    try {
+      const health = await fetch("/health/").then(r => r.json());
+      $("version").textContent = "v" + health.version;
+    } catch (e) {
+      setStatus("down", "Unreachable");
+      setControlsEnabled(false);
+      return;
+    }
+    if (!token) { setStatus("unauth", "Not connected"); return; }
+
+    try {
+      const m = await api("/metrics/");
+      setStatus("ok", "Healthy");
+      setControlsEnabled(true);
+      $("auth-msg").textContent = "";
+
+      $("t-uptime").textContent = fmtUptime(m.uptime_seconds);
+      $("t-count").textContent = fmtCount(m.database.count);
+      $("t-count-sub").textContent = m.database.deleted ? m.database.deleted + " deleted" : "";
+      $("t-dim").textContent = m.database.dim ?? "–";
+      $("t-cap").textContent = m.database.capacity ? "capacity " + fmtCount(m.database.capacity) : "";
+      $("t-req").textContent = fmtCount(m.totals.requests);
+      const errors = m.totals.errors_4xx + m.totals.errors_5xx;
+      const errEl = $("t-err");
+      errEl.textContent = fmtCount(errors);
+      errEl.classList.toggle("bad", m.totals.errors_5xx > 0);
+      $("t-err-sub").textContent = m.totals.errors_5xx > 0 ? "⚠ " + m.totals.errors_5xx + " server errors" : "";
+
+      const rows = Object.entries(m.endpoints).map(([route, e]) =>
+        "<tr><td>" + route + "</td><td>" + e.count +
+        "</td><td" + (e.errors_4xx ? ' class="err"' : "") + ">" + e.errors_4xx +
+        "</td><td" + (e.errors_5xx ? ' class="err"' : "") + ">" + e.errors_5xx +
+        "</td><td>" + e.avg_ms + "</td><td>" + e.p50_ms + "</td><td>" + e.p95_ms + "</td></tr>"
+      );
+      $("endpoint-rows").innerHTML = rows.length ? rows.join("")
+        : '<tr><td colspan="7" style="text-align:center;color:var(--muted)">No requests recorded yet</td></tr>';
+      $("updated").textContent = "updated " + new Date().toLocaleTimeString();
+    } catch (e) {
+      if (String(e.message).startsWith("401") || String(e.message).startsWith("403")) {
+        setStatus("unauth", "Invalid token");
+        setControlsEnabled(false);
+      } else {
+        setStatus("down", "Error");
+        $("auth-msg").textContent = e.message;
+      }
+    }
+  }
+
+  async function control(path, confirmText) {
+    if (confirmText && !window.confirm(confirmText)) return;
+    const msg = $("control-msg");
+    try {
+      const result = await api(path, { method: "POST" });
+      msg.textContent = result.message || "Done.";
+    } catch (e) {
+      msg.textContent = "Failed — " + e.message;
+    }
+    refresh();
+  }
+
+  $("connect").addEventListener("click", () => {
+    token = $("token").value.trim();
+    sessionStorage.setItem("vm_token", token);
+    refresh();
+  });
+  $("token").addEventListener("keydown", (e) => { if (e.key === "Enter") $("connect").click(); });
+  $("btn-save").addEventListener("click", () => control("/save/"));
+  $("btn-load").addEventListener("click", () => control("/load/"));
+  $("btn-reboot").addEventListener("click", () => control("/reboot/", "Reboot the VectorMorph server?"));
+  $("btn-shutdown").addEventListener("click", () => control("/shutdown/", "Shut down the VectorMorph server?"));
+
+  if (token) $("token").value = token;
+  refresh();
+  timer = setInterval(refresh, 5000);
+</script>
+</body>
+</html>

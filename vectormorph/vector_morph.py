@@ -12,11 +12,14 @@ from typing import Any, Dict, List, Optional
 
 import hnswlib
 import numpy as np
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, status
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, status
+from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
-__version__ = "0.3.0"
+from .metrics import MetricsRegistry
+
+__version__ = "0.4.0"
 
 DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "bin")
 
@@ -175,64 +178,131 @@ class VectorDatabase:
             self.index.mark_deleted(idx)
             self.deleted.add(idx)
 
-    def search(self, query_vector, k: int = 10):
+    def search(self, query_vector, k: int = 10) -> List[Dict[str, Any]]:
+        """Return the top-k matches, re-ranked by document-vector similarity.
+
+        The whole operation runs under the lock so the knn result, document
+        vectors, and metadata are read from a consistent snapshot.
+        """
         with self.lock:
             if self.index is None or self.count == 0:
                 raise LookupError("The database is empty")
             if len(query_vector) != self.dim:
                 raise ValueError(f"Vectors must have dimensionality {self.dim}")
             k = min(k, self.count)
-            indices, distances = self.index.knn_query(np.asarray([query_vector]), k)
-            return indices, distances
+            query = np.asarray(query_vector)
+            indices, distances = self.index.knn_query(query.reshape(1, -1), k)
+
+            results = []
+            for i, dist in zip(indices.flatten(), distances.flatten()):
+                i = int(i)
+                results.append(
+                    {
+                        "index": i,
+                        "similarity": float(np.dot(self.document_vectors[i], query)),
+                        "summary_distance": float(dist),
+                        "metadata": self.metadata[i],
+                    }
+                )
+            results.sort(key=lambda r: -r["similarity"])
+            return results
 
     def save(self):
+        """Persist atomically: write to temp files, then rename into place.
+
+        A crash mid-save leaves the previous on-disk state intact instead of
+        a mix of old and new files.
+        """
         with self.lock:
             if self.index is None:
                 raise LookupError("The database is empty")
             os.makedirs(self.data_dir, exist_ok=True)
-            self.index.save_index(os.path.join(self.data_dir, "index.bin"))
-            np.save(
-                os.path.join(self.data_dir, "summary_vectors.npy"),
-                np.asarray(self.summary_vectors),
-            )
-            np.save(
-                os.path.join(self.data_dir, "document_vectors.npy"),
-                np.asarray(self.document_vectors),
-            )
+
+            files = {
+                "index.bin": lambda path: self.index.save_index(path),
+                "summary_vectors.npy": lambda path: np.save(
+                    path, np.asarray(self.summary_vectors), allow_pickle=False
+                ),
+                "document_vectors.npy": lambda path: np.save(
+                    path, np.asarray(self.document_vectors), allow_pickle=False
+                ),
+            }
             state = {
                 "dim": self.dim,
                 "deleted": sorted(self.deleted),
                 "metadata": self.metadata,
             }
-            with open(os.path.join(self.data_dir, "metadata.json"), "w") as fh:
-                json.dump(state, fh)
+
+            tmp_paths = []
+            try:
+                for name, writer in files.items():
+                    tmp = os.path.join(self.data_dir, f".{name}.tmp")
+                    writer(tmp)
+                    # np.save appends .npy when the target lacks the suffix
+                    if not os.path.exists(tmp) and os.path.exists(tmp + ".npy"):
+                        os.rename(tmp + ".npy", tmp)
+                    tmp_paths.append((tmp, os.path.join(self.data_dir, name)))
+                tmp = os.path.join(self.data_dir, ".metadata.json.tmp")
+                with open(tmp, "w") as fh:
+                    json.dump(state, fh)
+                tmp_paths.append((tmp, os.path.join(self.data_dir, "metadata.json")))
+
+                for tmp, final in tmp_paths:
+                    os.replace(tmp, final)
+            except BaseException:
+                for tmp, _ in tmp_paths:
+                    if os.path.exists(tmp):
+                        os.remove(tmp)
+                raise
 
     def load(self) -> bool:
+        """Load a saved database. On any failure, in-memory state is untouched."""
         with self.lock:
             index_path = os.path.join(self.data_dir, "index.bin")
             metadata_path = os.path.join(self.data_dir, "metadata.json")
             if not (os.path.exists(index_path) and os.path.exists(metadata_path)):
                 return False
+
+            # Read everything into locals first; only commit to self at the end.
             with open(metadata_path) as fh:
                 state = json.load(fh)
-            self.dim = state["dim"]
-            self.deleted = set(state.get("deleted", []))
-            self.summary_vectors = np.load(
-                os.path.join(self.data_dir, "summary_vectors.npy")
+            dim = state["dim"]
+            deleted = set(state.get("deleted", []))
+            summary_vectors = np.load(
+                os.path.join(self.data_dir, "summary_vectors.npy"), allow_pickle=False
             ).tolist()
-            self.document_vectors = np.load(
-                os.path.join(self.data_dir, "document_vectors.npy")
+            document_vectors = np.load(
+                os.path.join(self.data_dir, "document_vectors.npy"), allow_pickle=False
             ).tolist()
-            self.metadata = state.get("metadata") or [None] * len(self.document_vectors)
-            self.index = hnswlib.Index(space="cosine", dim=self.dim)
-            self.index.load_index(
-                index_path, max_elements=max(len(self.document_vectors), self.INITIAL_CAPACITY)
+            metadata = state.get("metadata") or [None] * len(document_vectors)
+            index = hnswlib.Index(space="cosine", dim=dim)
+            index.load_index(
+                index_path, max_elements=max(len(document_vectors), self.INITIAL_CAPACITY)
             )
-            self.index.set_ef(200)
+            index.set_ef(200)
+
+            self.dim = dim
+            self.deleted = deleted
+            self.summary_vectors = summary_vectors
+            self.document_vectors = document_vectors
+            self.metadata = metadata
+            self.index = index
             return True
+
+    def info(self) -> Dict[str, Any]:
+        """Snapshot of database internals for monitoring."""
+        with self.lock:
+            return {
+                "count": self.count,
+                "total_slots": len(self.document_vectors),
+                "deleted": len(self.deleted),
+                "dim": self.dim,
+                "capacity": self.index.get_max_elements() if self.index else 0,
+            }
 
 
 db = VectorDatabase(data_dir=os.environ.get("VECTORMORPH_DATA_DIR", DEFAULT_DATA_DIR))
+metrics = MetricsRegistry()
 
 
 @asynccontextmanager
@@ -254,6 +324,18 @@ app = FastAPI(
 )
 
 
+@app.middleware("http")
+async def record_metrics(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    route = request.scope.get("route")
+    if route is not None:  # skip 404s on unknown paths so they can't grow the registry
+        metrics.record(
+            f"{request.method} {route.path}", time.perf_counter() - start, response.status_code
+        )
+    return response
+
+
 @app.get("/health/", tags=["Status"], summary="Health Check",
     description="Liveness probe; requires no authentication.",
 )
@@ -265,9 +347,17 @@ async def health():
     description="Return the number of stored vectors and their dimensionality.",
 )
 async def stats(user: str = Depends(get_current_user)):
+    return {**db.info(), "timestamp": utc_timestamp()}
+
+
+@app.get("/metrics/", tags=["Status"], summary="Server Metrics",
+    description="Uptime, request counts, error counts, and latency percentiles per endpoint.",
+)
+async def get_metrics(user: str = Depends(get_current_user)):
     return {
-        "count": db.count,
-        "dim": db.dim,
+        **metrics.snapshot(),
+        "database": db.info(),
+        "version": __version__,
         "timestamp": utc_timestamp(),
     }
 
@@ -356,26 +446,11 @@ async def delete_vector(idx: int, user: str = Depends(get_current_user)):
 async def search(body: SearchQuery, user: str = Depends(get_current_user)):
     with timer() as t:
         try:
-            indices, distances = db.search(body.query_vector, body.k)
+            results = db.search(body.query_vector, body.k)
         except LookupError:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="The database is empty") from None
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-
-        query = np.asarray(body.query_vector)
-        results = []
-        for i, dist in zip(indices.flatten(), distances.flatten()):
-            i = int(i)
-            similarity = float(np.dot(db.document_vectors[i], query))
-            results.append(
-                {
-                    "index": i,
-                    "similarity": similarity,
-                    "summary_distance": float(dist),
-                    "metadata": db.metadata[i],
-                }
-            )
-        results.sort(key=lambda r: -r["similarity"])
     return {"results": results, "timestamp": utc_timestamp(), "execution_time": t["elapsed"]}
 
 
@@ -405,6 +480,16 @@ async def load_database(user: str = Depends(get_current_user)):
         "timestamp": utc_timestamp(),
         "execution_time": t["elapsed"],
     }
+
+
+@app.get("/dashboard/", tags=["Status"], summary="Dashboard", include_in_schema=True,
+    description="Health and control dashboard. The page itself is public; all data "
+    "and controls on it require the bearer token.",
+)
+async def dashboard():
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "dashboard.html")
+    with open(path, encoding="utf-8") as fh:
+        return HTMLResponse(fh.read())
 
 
 def shutdown():
