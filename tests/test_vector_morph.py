@@ -299,6 +299,23 @@ class TestAPI:
         assert add_stats["count"] >= 1
         assert add_stats["p95_ms"] >= 0
 
+    def test_metrics_history(self, client):
+        add(client, vec(1, 0), vec(1, 0))
+        client.post("/search/", json={"query_vector": vec(1, 0)}, headers=AUTH)
+        body = client.get("/metrics/", headers=AUTH).json()
+        history = body["history"]
+        assert len(history) == 120
+        assert body["bucket_seconds"] == 5
+        # Timestamps are contiguous 5-second buckets, oldest first
+        assert all(b["t"] - a["t"] == 5 for a, b in zip(history, history[1:]))
+        # The traffic we just generated lands in the newest bucket(s)
+        recent = history[-2:]
+        assert sum(b["requests"] for b in recent) >= 2
+        active = [b for b in recent if b["requests"]]
+        assert all(b["avg_ms"] > 0 and b["p95_ms"] >= b["avg_ms"] * 0.5 for b in active)
+        # Empty buckets have null latency, not zero
+        assert history[0]["requests"] == 0 and history[0]["avg_ms"] is None
+
     def test_metrics_requires_auth(self, client):
         response = client.get("/metrics/", headers={"Authorization": "Bearer wrong"})
         assert response.status_code == 401

@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>VectorMorph Dashboard</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%232a78d6'/%3E%3Ctext x='8' y='12' font-size='10' font-family='sans-serif' font-weight='bold' fill='white' text-anchor='middle'%3EV%3C/text%3E%3C/svg%3E">
 <style>
   :root {
     --plane: #f9f9f7;
@@ -12,11 +13,14 @@
     --ink-2: #52514e;
     --muted: #898781;
     --hairline: #e1e0d9;
+    --baseline: #c3c2b7;
     --ring: rgba(11, 11, 11, 0.10);
     --good: #0ca30c;
     --warning: #fab219;
     --critical: #d03b3b;
-    --accent: #2a78d6;
+    --series-1: #2a78d6;   /* blue — requests, avg latency */
+    --series-2: #1baf7a;   /* aqua — p95 latency */
+    --deemph: #898781;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -26,8 +30,10 @@
       --ink-2: #c3c2b7;
       --muted: #898781;
       --hairline: #2c2c2a;
+      --baseline: #383835;
       --ring: rgba(255, 255, 255, 0.10);
-      --accent: #3987e5;
+      --series-1: #3987e5;
+      --series-2: #199e70;
     }
   }
   * { box-sizing: border-box; margin: 0; }
@@ -70,30 +76,69 @@
     padding: 7px 14px; font-size: 13px; font-weight: 550; cursor: pointer;
   }
   button:hover { border-color: var(--muted); }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary { background: var(--series-1); border-color: var(--series-1); color: #fff; }
   button.danger { color: var(--critical); border-color: var(--critical); }
   button:disabled { opacity: 0.45; cursor: default; }
 
-  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
   .tile .label { font-size: 12px; color: var(--ink-2); margin-bottom: 6px; }
   .tile .value { font-size: 26px; font-weight: 600; line-height: 1.1; }
-  .tile .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .tile .sub { font-size: 12px; color: var(--muted); margin-top: 4px; min-height: 15px; }
   .tile .value.bad { color: var(--critical); }
+  .tile .spark { margin-top: 6px; display: block; }
 
   h2 { font-size: 14px; font-weight: 650; margin: 24px 0 10px; }
+  .filters { display: flex; gap: 6px; align-items: center; margin: 0 0 10px; }
+  .filters .hint { font-size: 12px; color: var(--muted); margin-right: 4px; }
+  .filters button { padding: 5px 12px; font-size: 12px; }
+  .filters button.selected { font-weight: 700; border-color: var(--muted); }
+  .filters button.selected::before { content: "✓ "; }
+
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 800px) { .charts { grid-template-columns: 1fr; } }
+  .chart-card h3 { font-size: 13px; font-weight: 650; margin-bottom: 2px; }
+  .chart-card .subtitle { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .chart-wrap { position: relative; }
+  .chart-wrap svg { display: block; width: 100%; }
+  .chart-empty {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font-size: 12px; pointer-events: none;
+  }
+  .chart-empty[hidden] { display: none; }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--ink-2); margin-bottom: 6px; }
+  .legend .key { display: inline-block; width: 14px; height: 2px; border-radius: 1px; vertical-align: middle; margin-right: 5px; }
+
+  .tooltip {
+    position: absolute; pointer-events: none; z-index: 10; display: none;
+    background: var(--surface); border: 1px solid var(--ring); border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.12);
+    padding: 8px 10px; font-size: 12px; min-width: 130px;
+  }
+  .tooltip .when { color: var(--muted); margin-bottom: 4px; }
+  .tooltip .row { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+  .tooltip .row .key { width: 12px; height: 2px; border-radius: 1px; flex: none; }
+  .tooltip .row .val { font-weight: 650; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .tooltip .row .name { color: var(--ink-2); }
+
+  details.tablev { margin-top: 8px; }
+  details.tablev summary { font-size: 12px; color: var(--muted); cursor: pointer; }
+  details.tablev .scroll { max-height: 180px; overflow-y: auto; margin-top: 6px; }
+
   .tablewrap { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--hairline); white-space: nowrap; }
   th:first-child, td:first-child { text-align: left; font-family: ui-monospace, monospace; font-size: 12px; }
-  th { color: var(--muted); font-weight: 550; font-size: 12px; }
+  th { color: var(--muted); font-weight: 550; font-size: 12px; position: sticky; top: 0; background: var(--surface); }
   td { font-variant-numeric: tabular-nums; color: var(--ink-2); }
   td.err { color: var(--critical); font-weight: 600; }
   tr:last-child td { border-bottom: none; }
+  details.tablev table { font-size: 12px; }
+  details.tablev th, details.tablev td { padding: 4px 8px; }
 
   .controls { display: flex; gap: 8px; flex-wrap: wrap; }
   .msg { font-size: 12px; color: var(--muted); margin-top: 10px; min-height: 16px; }
   .footer { color: var(--muted); font-size: 12px; margin-top: 16px; }
-  a { color: var(--accent); }
+  a { color: var(--series-1); }
 </style>
 </head>
 <body>
@@ -110,12 +155,58 @@
   <span class="msg" id="auth-msg"></span>
 </div>
 
-<div class="tiles" id="tiles">
-  <div class="tile card"><div class="label">Uptime</div><div class="value" id="t-uptime">–</div></div>
+<div class="tiles">
+  <div class="tile card"><div class="label">Uptime</div><div class="value" id="t-uptime">–</div><div class="sub"></div></div>
   <div class="tile card"><div class="label">Vectors</div><div class="value" id="t-count">–</div><div class="sub" id="t-count-sub"></div></div>
   <div class="tile card"><div class="label">Dimensions</div><div class="value" id="t-dim">–</div><div class="sub" id="t-cap"></div></div>
-  <div class="tile card"><div class="label">Requests</div><div class="value" id="t-req">–</div></div>
+  <div class="tile card">
+    <div class="label">Requests</div><div class="value" id="t-req">–</div>
+    <svg class="spark" id="spark-req" width="96" height="26" viewBox="0 0 96 26" aria-hidden="true"></svg>
+  </div>
   <div class="tile card"><div class="label">Errors</div><div class="value" id="t-err">–</div><div class="sub" id="t-err-sub"></div></div>
+</div>
+
+<h2>Traffic</h2>
+<div class="filters" role="group" aria-label="Time window">
+  <span class="hint">Window</span>
+  <button data-window="60" aria-pressed="false">Last 5 min</button>
+  <button data-window="120" class="selected" aria-pressed="true">Last 10 min</button>
+</div>
+<div class="charts">
+  <div class="card chart-card">
+    <h3>Requests</h3>
+    <div class="subtitle">per 5-second interval</div>
+    <div class="chart-wrap" id="wrap-req">
+      <svg id="chart-req" height="170" tabindex="0" role="img" aria-label="Requests per interval column chart"></svg>
+      <div class="chart-empty" id="empty-req" hidden>No requests in this window</div>
+      <div class="tooltip" id="tip-req"></div>
+    </div>
+    <details class="tablev"><summary>View as table</summary>
+      <div class="scroll tablewrap"><table>
+        <thead><tr><th>Time</th><th>Requests</th><th>4xx</th><th>5xx</th></tr></thead>
+        <tbody id="table-req"></tbody>
+      </table></div>
+    </details>
+  </div>
+  <div class="card chart-card">
+    <h3>Latency</h3>
+    <div class="subtitle">milliseconds per 5-second interval</div>
+    <div class="legend">
+      <span><span class="key" style="background:var(--series-1)"></span>Average</span>
+      <span><span class="key" style="background:var(--series-2)"></span>p95</span>
+    </div>
+    <div class="chart-wrap" id="wrap-lat">
+      <svg id="chart-lat" height="150" tabindex="0" role="img" aria-label="Latency line chart, average and p95"></svg>
+      <div class="chart-empty" id="empty-lat" hidden>No requests in this window</div>
+      <div class="tooltip" id="tip-lat"></div>
+    </div>
+    <details class="tablev"><summary>View as table</summary>
+      <div class="scroll tablewrap"><table>
+        <thead><tr><th>Time</th><th>Avg ms</th><th>p95 ms</th></tr></thead>
+        <tbody id="table-lat"></tbody>
+      </table></div>
+    </details>
+  </div>
 </div>
 
 <h2>Endpoints</h2>
@@ -145,10 +236,18 @@
 </div>
 
 <script>
+  "use strict";
   let token = sessionStorage.getItem("vm_token") || "";
-  let timer = null;
+  let windowBuckets = 120;
+  let lastHistory = [];
+  let bucketSeconds = 5;
+  let prevVectorCount = null;
 
   const $ = (id) => document.getElementById(id);
+  const SVGNS = "http://www.w3.org/2000/svg";
+
+  const css = (name) =>
+    getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
   function fmtUptime(s) {
     if (s < 90) return Math.round(s) + "s";
@@ -160,6 +259,324 @@
     if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
     if (n >= 1e4) return (n / 1e3).toFixed(1) + "K";
     return String(n);
+  }
+  function fmtTime(epoch) {
+    return new Date(epoch * 1000).toLocaleTimeString([], { hour12: false });
+  }
+
+  // Round a maximum up to a clean 1/2/5 step so y ticks are readable numbers,
+  // and pick tick divisions that keep every tick value clean too.
+  function niceMax(value) {
+    if (value <= 0) return 1;
+    const power = Math.pow(10, Math.floor(Math.log10(value)));
+    for (const mult of [1, 2, 5, 10]) {
+      if (value <= mult * power) return mult * power;
+    }
+    return 10 * power;
+  }
+  function tickDivisions(yMax) {
+    const mantissa = yMax / Math.pow(10, Math.floor(Math.log10(yMax)));
+    return Math.abs(mantissa - 5) < 0.01 ? 5 : Math.abs(mantissa - 2) < 0.01 ? 4 : 2;
+  }
+  function fmtTick(value) {
+    const rounded = Math.round(value * 100) / 100;
+    return rounded >= 1000 ? rounded.toLocaleString() : String(rounded);
+  }
+
+  function el(name, attrs) {
+    const node = document.createElementNS(SVGNS, name);
+    for (const key in attrs) node.setAttribute(key, attrs[key]);
+    return node;
+  }
+
+  function drawFrame(svg, w, h, pad, yMax) {
+    // Gridlines + baseline, hairline solid, clean tick values in muted ink.
+    const divisions = tickDivisions(yMax);
+    for (let i = 0; i <= divisions; i++) {
+      const value = (yMax / divisions) * i;
+      const y = h - pad.bottom - ((h - pad.top - pad.bottom) * i) / divisions;
+      svg.appendChild(el("line", {
+        x1: pad.left, x2: w - pad.right, y1: y, y2: y,
+        stroke: i === 0 ? css("--baseline") : css("--hairline"), "stroke-width": 1,
+      }));
+      if (i > 0) {
+        const label = el("text", {
+          x: pad.left - 6, y: y + 3.5, "text-anchor": "end",
+          "font-size": 10, fill: css("--muted"),
+          style: "font-variant-numeric: tabular-nums",
+        });
+        label.textContent = fmtTick(value);
+        svg.appendChild(label);
+      }
+    }
+  }
+
+  function drawXLabels(svg, data, xOf, h, pad) {
+    const every = Math.max(1, Math.round(60 / bucketSeconds)); // one label per minute
+    for (let i = data.length - 1; i >= 0; i -= every) {
+      const label = el("text", {
+        x: xOf(i), y: h - pad.bottom + 14, "text-anchor": "middle",
+        "font-size": 10, fill: css("--muted"),
+        style: "font-variant-numeric: tabular-nums",
+      });
+      label.textContent = fmtTime(data[i].t).slice(3); // MM:SS
+      svg.appendChild(label);
+    }
+  }
+
+  function tooltipRow(tip, colorVar, value, name) {
+    const row = document.createElement("div");
+    row.className = "row";
+    if (colorVar) {
+      const key = document.createElement("span");
+      key.className = "key";
+      key.style.background = "var(" + colorVar + ")";
+      row.appendChild(key);
+    }
+    const val = document.createElement("span");
+    val.className = "val";
+    val.textContent = value;
+    const label = document.createElement("span");
+    label.className = "name";
+    label.textContent = name;
+    row.appendChild(val);
+    row.appendChild(label);
+    tip.appendChild(row);
+  }
+
+  function placeTooltip(tip, wrap, x) {
+    tip.style.display = "block";
+    const shownLeft = x + 14 + tip.offsetWidth > wrap.clientWidth;
+    tip.style.left = (shownLeft ? x - tip.offsetWidth - 10 : x + 14) + "px";
+    tip.style.top = "8px";
+  }
+
+  // Shared pointer/keyboard selection: the crosshair finds the X — the whole
+  // plot is the hit surface and the nearest bucket is selected.
+  function attachHover(svg, wrap, tip, data, xOf, onSelect) {
+    let selected = -1;
+    function select(i) {
+      selected = i;
+      onSelect(i);
+      if (i < 0) { tip.style.display = "none"; return; }
+      placeTooltip(tip, wrap, xOf(i));
+    }
+    svg.addEventListener("pointermove", (e) => {
+      if (!data.length) return;
+      const rect = svg.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      let best = 0, bestDist = Infinity;
+      for (let i = 0; i < data.length; i++) {
+        const d = Math.abs(xOf(i) - x);
+        if (d < bestDist) { bestDist = d; best = i; }
+      }
+      select(best);
+    });
+    svg.addEventListener("pointerleave", () => select(-1));
+    svg.addEventListener("keydown", (e) => {
+      if (!data.length) return;
+      if (e.key === "ArrowLeft") { select(Math.max(0, (selected < 0 ? data.length : selected) - 1)); e.preventDefault(); }
+      else if (e.key === "ArrowRight") { select(Math.min(data.length - 1, selected + 1)); e.preventDefault(); }
+      else if (e.key === "Escape") select(-1);
+    });
+    svg.addEventListener("blur", () => select(-1));
+  }
+
+  function renderRequestsChart(data) {
+    const svg = $("chart-req"), wrap = $("wrap-req"), tip = $("tip-req");
+    const w = wrap.clientWidth, h = 170;
+    const pad = { left: 36, right: 8, top: 8, bottom: 22 };
+    svg.setAttribute("viewBox", "0 0 " + w + " " + h);
+    svg.replaceChildren();
+
+    const total = data.reduce((s, d) => s + d.requests, 0);
+    $("empty-req").hidden = total > 0;
+
+    const yMax = niceMax(Math.max(1, ...data.map((d) => d.requests)));
+    drawFrame(svg, w, h, pad, yMax);
+
+    const plotW = w - pad.left - pad.right, plotH = h - pad.top - pad.bottom;
+    const band = plotW / data.length;
+    const barW = Math.max(2, Math.min(24, band - 2)); // 2px surface gap between bars
+    const xOf = (i) => pad.left + band * i + band / 2;
+    const yOf = (v) => h - pad.bottom - (plotH * v) / yMax;
+    drawXLabels(svg, data, xOf, h, pad);
+
+    const bars = [];
+    data.forEach((d, i) => {
+      if (!d.requests) { bars.push(null); return; }
+      const y = yOf(d.requests), x = xOf(i) - barW / 2;
+      const bh = h - pad.bottom - y;
+      const r = Math.min(4, barW / 2, bh); // rounded data-end, square baseline
+      const path = el("path", {
+        d: "M" + x + "," + (h - pad.bottom) +
+           " L" + x + "," + (y + r) +
+           " Q" + x + "," + y + " " + (x + r) + "," + y +
+           " L" + (x + barW - r) + "," + y +
+           " Q" + (x + barW) + "," + y + " " + (x + barW) + "," + (y + r) +
+           " L" + (x + barW) + "," + (h - pad.bottom) + " Z",
+        fill: css("--series-1"), "fill-opacity": 0.85,
+      });
+      svg.appendChild(path);
+      bars.push(path);
+      if (d.errors_5xx > 0) {
+        // status mark: server errors in this interval (details in tooltip + table)
+        svg.appendChild(el("circle", {
+          cx: xOf(i), cy: y - 7, r: 4,
+          fill: css("--critical"), stroke: css("--surface"), "stroke-width": 2,
+        }));
+      }
+    });
+
+    attachHover(svg, wrap, tip, data, xOf, (i) => {
+      bars.forEach((bar, j) => bar && bar.setAttribute("fill-opacity", j === i ? 1 : 0.85));
+      if (i < 0) return;
+      const d = data[i];
+      tip.replaceChildren();
+      const when = document.createElement("div");
+      when.className = "when";
+      when.textContent = fmtTime(d.t);
+      tip.appendChild(when);
+      tooltipRow(tip, "--series-1", String(d.requests), "requests");
+      if (d.errors_4xx) tooltipRow(tip, null, String(d.errors_4xx), "4xx");
+      if (d.errors_5xx) tooltipRow(tip, "--critical", String(d.errors_5xx), "5xx");
+    });
+
+    const rows = data.filter((d) => d.requests).slice(-40).reverse().map((d) => {
+      const tr = document.createElement("tr");
+      [fmtTime(d.t), d.requests, d.errors_4xx, d.errors_5xx].forEach((v, i) => {
+        const td = document.createElement("td");
+        td.textContent = String(v);
+        if (i >= 2 && v > 0) td.className = "err";
+        tr.appendChild(td);
+      });
+      return tr;
+    });
+    $("table-req").replaceChildren(...rows);
+  }
+
+  function renderLatencyChart(data) {
+    const svg = $("chart-lat"), wrap = $("wrap-lat"), tip = $("tip-lat");
+    const w = wrap.clientWidth, h = 150;
+    const pad = { left: 36, right: 8, top: 8, bottom: 22 };
+    svg.setAttribute("viewBox", "0 0 " + w + " " + h);
+    svg.replaceChildren();
+
+    const present = data.filter((d) => d.avg_ms !== null);
+    $("empty-lat").hidden = present.length > 0;
+
+    const yMax = niceMax(Math.max(1, ...present.map((d) => d.p95_ms)));
+    drawFrame(svg, w, h, pad, yMax);
+
+    const plotW = w - pad.left - pad.right, plotH = h - pad.top - pad.bottom;
+    const xOf = (i) => pad.left + (plotW * i) / Math.max(1, data.length - 1);
+    const yPix = (v) => h - pad.bottom - (plotH * v) / yMax;
+    drawXLabels(svg, data, xOf, h, pad);
+
+    function linePath(field) {
+      let path = "", drawing = false;
+      data.forEach((d, i) => {
+        if (d[field] === null) { drawing = false; return; }
+        path += (drawing ? " L" : " M") + xOf(i) + "," + yPix(d[field]);
+        drawing = true;
+      });
+      return path;
+    }
+    for (const [field, colorVar] of [["p95_ms", "--series-2"], ["avg_ms", "--series-1"]]) {
+      svg.appendChild(el("path", {
+        d: linePath(field), fill: "none", stroke: css(colorVar),
+        "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round",
+      }));
+      // An isolated active bucket has no neighbors to connect to — mark it
+      // with a dot so the value doesn't vanish.
+      data.forEach((d, i) => {
+        if (d[field] === null) return;
+        const prev = i > 0 ? data[i - 1][field] : null;
+        const next = i < data.length - 1 ? data[i + 1][field] : null;
+        if (prev === null && next === null) {
+          svg.appendChild(el("circle", {
+            cx: xOf(i), cy: yPix(d[field]), r: 2.5, fill: css(colorVar),
+          }));
+        }
+      });
+    }
+
+    const crosshair = el("line", {
+      y1: pad.top, y2: h - pad.bottom, stroke: css("--baseline"), "stroke-width": 1, visibility: "hidden",
+    });
+    svg.appendChild(crosshair);
+    const dots = {
+      avg_ms: el("circle", { r: 4, fill: css("--series-1"), stroke: css("--surface"), "stroke-width": 2, visibility: "hidden" }),
+      p95_ms: el("circle", { r: 4, fill: css("--series-2"), stroke: css("--surface"), "stroke-width": 2, visibility: "hidden" }),
+    };
+    svg.appendChild(dots.p95_ms);
+    svg.appendChild(dots.avg_ms);
+
+    attachHover(svg, wrap, tip, data, xOf, (i) => {
+      if (i < 0 || data[i].avg_ms === null) {
+        crosshair.setAttribute("visibility", "hidden");
+        dots.avg_ms.setAttribute("visibility", "hidden");
+        dots.p95_ms.setAttribute("visibility", "hidden");
+        if (i < 0) return;
+      }
+      const d = data[i];
+      crosshair.setAttribute("visibility", "visible");
+      crosshair.setAttribute("x1", xOf(i));
+      crosshair.setAttribute("x2", xOf(i));
+      tip.replaceChildren();
+      const when = document.createElement("div");
+      when.className = "when";
+      when.textContent = fmtTime(d.t);
+      tip.appendChild(when);
+      if (d.avg_ms === null) {
+        tooltipRow(tip, null, "–", "no requests");
+        return;
+      }
+      for (const [field, colorVar, name] of [["p95_ms", "--series-2", "p95"], ["avg_ms", "--series-1", "avg"]]) {
+        dots[field].setAttribute("visibility", "visible");
+        dots[field].setAttribute("cx", xOf(i));
+        dots[field].setAttribute("cy", yPix(d[field]));
+        tooltipRow(tip, colorVar, d[field].toFixed(1) + " ms", name);
+      }
+    });
+
+    const rows = present.slice(-40).reverse().map((d) => {
+      const tr = document.createElement("tr");
+      [fmtTime(d.t), d.avg_ms.toFixed(1), d.p95_ms.toFixed(1)].forEach((v) => {
+        const td = document.createElement("td");
+        td.textContent = String(v);
+        tr.appendChild(td);
+      });
+      return tr;
+    });
+    $("table-lat").replaceChildren(...rows);
+  }
+
+  function renderSparkline(history) {
+    const svg = $("spark-req");
+    svg.replaceChildren();
+    const recent = history.slice(-12); // 12-point trend
+    if (!recent.some((d) => d.requests)) return;
+    const w = 96, h = 26, max = Math.max(1, ...recent.map((d) => d.requests));
+    const xOf = (i) => 4 + ((w - 12) * i) / Math.max(1, recent.length - 1);
+    const yOf = (v) => h - 4 - (h - 9) * (v / max);
+    const points = recent.map((d, i) => xOf(i) + "," + yOf(d.requests)).join(" ");
+    svg.appendChild(el("polyline", {
+      points, fill: "none", stroke: css("--deemph"), "stroke-width": 1.5,
+      "stroke-linejoin": "round", "stroke-linecap": "round",
+    }));
+    const last = recent.length - 1; // current period in the accent
+    svg.appendChild(el("circle", {
+      cx: xOf(last), cy: yOf(recent[last].requests), r: 3,
+      fill: css("--series-1"), stroke: css("--surface"), "stroke-width": 2,
+    }));
+  }
+
+  function renderCharts() {
+    const data = lastHistory.slice(-windowBuckets);
+    if (!data.length) return;
+    renderRequestsChart(data);
+    renderLatencyChart(data);
   }
 
   async function api(path, options) {
@@ -176,20 +593,16 @@
   }
 
   function setStatus(cls, text) {
-    const el = $("status");
-    el.className = "status " + cls;
+    $("status").className = "status " + cls;
     $("status-text").textContent = text;
   }
-
   function setControlsEnabled(on) {
-    for (const id of ["btn-save", "btn-load", "btn-reboot", "btn-shutdown"]) {
-      $(id).disabled = !on;
-    }
+    for (const id of ["btn-save", "btn-load", "btn-reboot", "btn-shutdown"]) $(id).disabled = !on;
   }
 
   async function refresh() {
     try {
-      const health = await fetch("/health/").then(r => r.json());
+      const health = await fetch("/health/").then((r) => r.json());
       $("version").textContent = "v" + health.version;
     } catch (e) {
       setStatus("down", "Unreachable");
@@ -203,27 +616,41 @@
       setStatus("ok", "Healthy");
       setControlsEnabled(true);
       $("auth-msg").textContent = "";
+      bucketSeconds = m.bucket_seconds || 5;
 
       $("t-uptime").textContent = fmtUptime(m.uptime_seconds);
       $("t-count").textContent = fmtCount(m.database.count);
-      $("t-count-sub").textContent = m.database.deleted ? m.database.deleted + " deleted" : "";
+      const deltaParts = [];
+      if (prevVectorCount !== null && m.database.count !== prevVectorCount) {
+        const delta = m.database.count - prevVectorCount;
+        deltaParts.push((delta > 0 ? "+" : "") + delta + " since last refresh");
+      }
+      if (m.database.deleted) deltaParts.push(m.database.deleted + " deleted");
+      $("t-count-sub").textContent = deltaParts.join(" · ");
+      prevVectorCount = m.database.count;
       $("t-dim").textContent = m.database.dim ?? "–";
       $("t-cap").textContent = m.database.capacity ? "capacity " + fmtCount(m.database.capacity) : "";
       $("t-req").textContent = fmtCount(m.totals.requests);
       const errors = m.totals.errors_4xx + m.totals.errors_5xx;
-      const errEl = $("t-err");
-      errEl.textContent = fmtCount(errors);
-      errEl.classList.toggle("bad", m.totals.errors_5xx > 0);
+      $("t-err").textContent = fmtCount(errors);
+      $("t-err").classList.toggle("bad", m.totals.errors_5xx > 0);
       $("t-err-sub").textContent = m.totals.errors_5xx > 0 ? "⚠ " + m.totals.errors_5xx + " server errors" : "";
 
-      const rows = Object.entries(m.endpoints).map(([route, e]) =>
-        "<tr><td>" + route + "</td><td>" + e.count +
-        "</td><td" + (e.errors_4xx ? ' class="err"' : "") + ">" + e.errors_4xx +
-        "</td><td" + (e.errors_5xx ? ' class="err"' : "") + ">" + e.errors_5xx +
-        "</td><td>" + e.avg_ms + "</td><td>" + e.p50_ms + "</td><td>" + e.p95_ms + "</td></tr>"
-      );
-      $("endpoint-rows").innerHTML = rows.length ? rows.join("")
-        : '<tr><td colspan="7" style="text-align:center;color:var(--muted)">No requests recorded yet</td></tr>';
+      lastHistory = m.history || [];
+      renderSparkline(lastHistory);
+      renderCharts();
+
+      const rows = Object.entries(m.endpoints).map(([route, e]) => {
+        const tr = document.createElement("tr");
+        [route, e.count, e.errors_4xx, e.errors_5xx, e.avg_ms, e.p50_ms, e.p95_ms].forEach((v, i) => {
+          const td = document.createElement("td");
+          td.textContent = String(v);
+          if ((i === 2 || i === 3) && v > 0) td.className = "err";
+          tr.appendChild(td);
+        });
+        return tr;
+      });
+      if (rows.length) $("endpoint-rows").replaceChildren(...rows);
       $("updated").textContent = "updated " + new Date().toLocaleTimeString();
     } catch (e) {
       if (String(e.message).startsWith("401") || String(e.message).startsWith("403")) {
@@ -248,6 +675,17 @@
     refresh();
   }
 
+  document.querySelectorAll(".filters button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      windowBuckets = Number(btn.dataset.window);
+      document.querySelectorAll(".filters button").forEach((b) => {
+        b.classList.toggle("selected", b === btn);
+        b.setAttribute("aria-pressed", b === btn ? "true" : "false");
+      });
+      renderCharts();
+    });
+  });
+
   $("connect").addEventListener("click", () => {
     token = $("token").value.trim();
     sessionStorage.setItem("vm_token", token);
@@ -258,10 +696,11 @@
   $("btn-load").addEventListener("click", () => control("/load/"));
   $("btn-reboot").addEventListener("click", () => control("/reboot/", "Reboot the VectorMorph server?"));
   $("btn-shutdown").addEventListener("click", () => control("/shutdown/", "Shut down the VectorMorph server?"));
+  window.addEventListener("resize", renderCharts);
 
   if (token) $("token").value = token;
   refresh();
-  timer = setInterval(refresh, 5000);
+  setInterval(refresh, 5000);
 </script>
 </body>
 </html>
