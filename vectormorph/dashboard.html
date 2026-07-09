@@ -85,6 +85,7 @@
   .tile .value { font-size: 26px; font-weight: 600; line-height: 1.1; }
   .tile .sub { font-size: 12px; color: var(--muted); margin-top: 4px; min-height: 15px; }
   .tile .value.bad { color: var(--critical); }
+  .tile .value.warn { color: var(--warning); }
   .tile .spark { margin-top: 6px; display: block; }
 
   h2 { font-size: 14px; font-weight: 650; margin: 24px 0 10px; }
@@ -164,6 +165,7 @@
     <svg class="spark" id="spark-req" width="96" height="26" viewBox="0 0 96 26" aria-hidden="true"></svg>
   </div>
   <div class="tile card"><div class="label">Errors</div><div class="value" id="t-err">–</div><div class="sub" id="t-err-sub"></div></div>
+  <div class="tile card"><div class="label">Loop guard</div><div class="value" id="t-loops">–</div><div class="sub" id="t-loops-sub"></div></div>
 </div>
 
 <h2>Traffic</h2>
@@ -206,6 +208,16 @@
         <tbody id="table-lat"></tbody>
       </table></div>
     </details>
+  </div>
+</div>
+
+<div id="loops-section" hidden>
+  <h2>Flagged doom loops</h2>
+  <div class="card tablewrap">
+    <table>
+      <thead><tr><th>Client</th><th style="text-align:left">Request</th><th>Blocked for</th></tr></thead>
+      <tbody id="loop-rows"></tbody>
+    </table>
   </div>
 </div>
 
@@ -635,6 +647,31 @@
       $("t-err").textContent = fmtCount(errors);
       $("t-err").classList.toggle("bad", m.totals.errors_5xx > 0);
       $("t-err-sub").textContent = m.totals.errors_5xx > 0 ? "⚠ " + m.totals.errors_5xx + " server errors" : "";
+
+      const guard = m.loop_guard || {};
+      if (guard.enabled === false) {
+        $("t-loops").textContent = "off";
+        $("t-loops-sub").textContent = "disabled by VECTORMORPH_LOOPGUARD=0";
+      } else {
+        $("t-loops").textContent = String(guard.active_blocks ?? 0);
+        $("t-loops").classList.toggle("warn", (guard.active_blocks ?? 0) > 0);
+        $("t-loops-sub").textContent = (guard.active_blocks ?? 0) > 0
+          ? "⚠ active blocks · " + guard.requests_blocked_total + " requests turned away"
+          : (guard.loops_detected_total ?? 0) + " detected · " + (guard.requests_blocked_total ?? 0) + " blocked";
+      }
+      const activeLoops = guard.active || [];
+      $("loops-section").hidden = activeLoops.length === 0;
+      $("loop-rows").replaceChildren(...activeLoops.map((loop) => {
+        const tr = document.createElement("tr");
+        const cells = [loop.client, loop.method + " " + loop.path, loop.retry_after + " s"];
+        cells.forEach((value, i) => {
+          const td = document.createElement("td");
+          td.textContent = String(value);
+          if (i === 1) td.style.textAlign = "left";
+          tr.appendChild(td);
+        });
+        return tr;
+      }));
 
       lastHistory = m.history || [];
       renderSparkline(lastHistory);

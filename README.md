@@ -38,6 +38,10 @@ stats, request metrics, and use the save/load/reboot/shutdown controls).
 | `VECTORMORPH_PORT`     | `4440`               | Port to listen on                            |
 | `VECTORMORPH_DATA_DIR` | `<package dir>/bin`  | Directory used by `/save/` and `/load/`      |
 | `VECTORMORPH_AUTOLOAD` | `1`                  | Load a previously saved database on startup (`0` disables) |
+| `VECTORMORPH_LOOPGUARD` | `1`                 | Doom-loop protection (`0` disables)          |
+| `VECTORMORPH_LOOPGUARD_THRESHOLD` | `15`      | Failures of the same request before blocking |
+| `VECTORMORPH_LOOPGUARD_WINDOW` | `30`         | Seconds the failures must fall within        |
+| `VECTORMORPH_LOOPGUARD_COOLDOWN` | `30`       | Seconds the offending request stays blocked  |
 
 ## 📖 API
 
@@ -62,6 +66,16 @@ All endpoints except `/health/` require an `Authorization: Bearer <token>` heade
 
 The dimensionality of the database is set by the first vector added; all subsequent
 vectors must match it.
+
+### Doom-loop protection
+
+LLM agents (and buggy retry logic) sometimes get stuck replaying the same failing
+request forever. VectorMorph watches failures per client + method + path: when the
+same client repeats the same failing request more than
+`VECTORMORPH_LOOPGUARD_THRESHOLD` times within the window, that request is blocked
+for the cooldown period and receives `429 Too Many Requests` with a `Retry-After`
+header. A successful request clears the counter, `/health/` and `/dashboard/` are
+exempt, and active blocks are shown on the dashboard and in `/metrics/`.
 
 ### Example
 

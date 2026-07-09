@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vectormorph"
-version = "0.4.0"
+version = "0.5.0"
 description = "A lightweight vector database."
 readme = "README.md"
 authors = [{ name = "Collin Paran" }]

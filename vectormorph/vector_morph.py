@@ -13,13 +13,14 @@ from typing import Any, Dict, List, Optional
 import hnswlib
 import numpy as np
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
+from .loopguard import LoopGuard
 from .metrics import MetricsRegistry
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "bin")
 
@@ -303,6 +304,9 @@ class VectorDatabase:
 
 db = VectorDatabase(data_dir=os.environ.get("VECTORMORPH_DATA_DIR", DEFAULT_DATA_DIR))
 metrics = MetricsRegistry()
+loop_guard = LoopGuard.from_env()
+
+LOOPGUARD_EXEMPT_PATHS = {"/health/", "/dashboard/"}
 
 
 @asynccontextmanager
@@ -336,6 +340,34 @@ async def record_metrics(request: Request, call_next):
     return response
 
 
+# Registered after record_metrics, so this runs OUTERMOST: blocked requests
+# are turned away before they reach the endpoint metrics or any handler.
+@app.middleware("http")
+async def guard_doom_loops(request: Request, call_next):
+    if not loop_guard.enabled or request.url.path in LOOPGUARD_EXEMPT_PATHS:
+        return await call_next(request)
+
+    client = request.client.host if request.client else "unknown"
+    key = (client, request.method, request.url.path)
+    retry_after = loop_guard.retry_after(key)
+    if retry_after > 0:
+        seconds = max(1, int(retry_after + 0.999))
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={
+                "detail": (
+                    "Doom loop detected: this client keeps repeating the same "
+                    f"failing request. Retry after {seconds}s."
+                )
+            },
+            headers={"Retry-After": str(seconds)},
+        )
+
+    response = await call_next(request)
+    loop_guard.record(key, response.status_code)
+    return response
+
+
 @app.get("/health/", tags=["Status"], summary="Health Check",
     description="Liveness probe; requires no authentication.",
 )
@@ -357,6 +389,7 @@ async def get_metrics(user: str = Depends(get_current_user)):
     return {
         **metrics.snapshot(),
         "database": db.info(),
+        "loop_guard": loop_guard.snapshot(),
         "version": __version__,
         "timestamp": utc_timestamp(),
     }

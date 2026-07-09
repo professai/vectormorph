@@ -4,7 +4,8 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from vectormorph.vector_morph import VectorDatabase, app, db, metrics
+from vectormorph.loopguard import LoopGuard
+from vectormorph.vector_morph import VectorDatabase, app, db, loop_guard, metrics
 
 TOKEN = "test-token"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -18,6 +19,7 @@ def configure(monkeypatch, tmp_path):
     for attr in ("index", "summary_vectors", "document_vectors", "metadata", "deleted", "dim", "data_dir"):
         setattr(db, attr, getattr(fresh, attr))
     metrics.reset()
+    loop_guard.reset()
     yield
 
 
@@ -154,6 +156,60 @@ class TestVectorDatabase:
     def test_load_missing_returns_false(self, tmp_path):
         d = VectorDatabase(data_dir=str(tmp_path / "nothing"))
         assert d.load() is False
+
+
+class TestLoopGuard:
+    KEY = ("1.2.3.4", "GET", "/get/999")
+
+    def test_blocks_after_repeated_failures(self):
+        guard = LoopGuard(threshold=3, window_seconds=10, cooldown_seconds=30)
+        for i in range(4):
+            assert guard.retry_after(self.KEY, now=float(i)) == 0
+            guard.record(self.KEY, 404, now=float(i))
+        # Block was set at t=3 for 30s, so 29s remain at t=4
+        assert guard.retry_after(self.KEY, now=4.0) == pytest.approx(29.0)
+        # Block expires after the cooldown
+        assert guard.retry_after(self.KEY, now=35.0) == 0
+
+    def test_success_resets_failures(self):
+        guard = LoopGuard(threshold=3, window_seconds=10, cooldown_seconds=30)
+        for i in range(3):
+            guard.record(self.KEY, 404, now=float(i))
+        guard.record(self.KEY, 200, now=3.0)
+        guard.record(self.KEY, 404, now=4.0)
+        assert guard.retry_after(self.KEY, now=5.0) == 0
+
+    def test_failures_outside_window_ignored(self):
+        guard = LoopGuard(threshold=3, window_seconds=10, cooldown_seconds=30)
+        for i in range(3):
+            guard.record(self.KEY, 404, now=float(i))
+        guard.record(self.KEY, 404, now=100.0)  # earlier failures aged out
+        assert guard.retry_after(self.KEY, now=101.0) == 0
+
+    def test_keys_are_independent(self):
+        guard = LoopGuard(threshold=2, window_seconds=10, cooldown_seconds=30)
+        other = ("5.6.7.8", "GET", "/get/999")
+        for i in range(3):
+            guard.record(self.KEY, 404, now=float(i))
+        assert guard.retry_after(self.KEY, now=3.0) > 0
+        assert guard.retry_after(other, now=3.0) == 0
+
+    def test_disabled_guard_never_blocks(self):
+        guard = LoopGuard(enabled=False, threshold=1, window_seconds=10, cooldown_seconds=30)
+        for i in range(10):
+            guard.record(self.KEY, 404, now=float(i))
+        assert guard.retry_after(self.KEY, now=10.0) == 0
+
+    def test_snapshot(self):
+        guard = LoopGuard(threshold=2, window_seconds=10, cooldown_seconds=30)
+        for i in range(3):
+            guard.record(self.KEY, 404, now=float(i))
+        guard.retry_after(self.KEY, now=3.0)  # one blocked request
+        snap = guard.snapshot(now=3.0)
+        assert snap["active_blocks"] == 1
+        assert snap["loops_detected_total"] == 1
+        assert snap["requests_blocked_total"] == 1
+        assert snap["active"][0]["path"] == "/get/999"
 
 
 class TestAPI:
@@ -324,6 +380,37 @@ class TestAPI:
         client.post("/search/", json={"query_vector": vec(1, 0)}, headers=AUTH)  # 404: empty db
         body = client.get("/metrics/", headers=AUTH).json()
         assert body["endpoints"]["POST /search/"]["errors_4xx"] == 1
+
+    def test_doom_loop_gets_429_with_retry_after(self, client):
+        # Hammer the same failing request past the threshold
+        responses = [client.get("/get/999", headers=AUTH) for _ in range(loop_guard.threshold + 2)]
+        assert responses[0].status_code == 404
+        blocked = [r for r in responses if r.status_code == 429]
+        assert blocked, "expected the loop to be blocked eventually"
+        assert int(blocked[0].headers["Retry-After"]) >= 1
+        assert "Doom loop" in blocked[0].json()["detail"]
+
+        body = client.get("/metrics/", headers=AUTH).json()
+        guard = body["loop_guard"]
+        assert guard["enabled"] is True
+        assert guard["loops_detected_total"] == 1
+        assert guard["active_blocks"] == 1
+        assert guard["active"][0]["path"] == "/get/999"
+
+    def test_successful_requests_never_blocked(self, client):
+        for _ in range(loop_guard.threshold + 5):
+            response = client.get("/health/")
+            assert response.status_code == 200
+        for _ in range(loop_guard.threshold + 5):
+            response = client.get("/stats/", headers=AUTH)
+            assert response.status_code == 200
+
+    def test_health_exempt_from_loop_guard(self, client):
+        # Even unauthenticated failures on /health/ would be exempt; simulate
+        # heavy failing traffic on a guarded route, then confirm /health/ still works
+        for _ in range(loop_guard.threshold + 2):
+            client.get("/get/999", headers=AUTH)
+        assert client.get("/health/").status_code == 200
 
     def test_dashboard_served_without_auth(self, client):
         response = client.get("/dashboard/")
