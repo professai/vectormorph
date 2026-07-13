@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from .loopguard import LoopGuard
 from .metrics import MetricsRegistry
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "bin")
 
@@ -78,6 +78,11 @@ class VectorBatch(BaseModel):
 class SearchQuery(BaseModel):
     query_vector: List[float] = Field(..., description="Vector to search for.")
     k: int = Field(10, ge=1, description="Maximum number of results to return.")
+    filter: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Metadata equality filter: only vectors whose metadata contains "
+        "every given key with the given value are returned.",
+    )
 
 
 class VectorDatabase:
@@ -179,9 +184,19 @@ class VectorDatabase:
             self.index.mark_deleted(idx)
             self.deleted.add(idx)
 
-    def search(self, query_vector, k: int = 10) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _matches(metadata, metadata_filter) -> bool:
+        if not metadata_filter:
+            return True
+        if not metadata:
+            return False
+        return all(metadata.get(key) == value for key, value in metadata_filter.items())
+
+    def search(self, query_vector, k: int = 10, metadata_filter=None) -> List[Dict[str, Any]]:
         """Return the top-k matches, re-ranked by document-vector similarity.
 
+        With a metadata filter, the knn fetch is oversampled and widened until
+        k matching results are found or every stored vector has been examined.
         The whole operation runs under the lock so the knn result, document
         vectors, and metadata are read from a consistent snapshot.
         """
@@ -192,21 +207,60 @@ class VectorDatabase:
                 raise ValueError(f"Vectors must have dimensionality {self.dim}")
             k = min(k, self.count)
             query = np.asarray(query_vector)
-            indices, distances = self.index.knn_query(query.reshape(1, -1), k)
 
-            results = []
-            for i, dist in zip(indices.flatten(), distances.flatten()):
-                i = int(i)
-                results.append(
-                    {
-                        "index": i,
-                        "similarity": float(np.dot(self.document_vectors[i], query)),
-                        "summary_distance": float(dist),
-                        "metadata": self.metadata[i],
-                    }
-                )
+            fetch = k if not metadata_filter else min(self.count, max(4 * k, k + 16))
+            while True:
+                indices, distances = self.index.knn_query(query.reshape(1, -1), fetch)
+                results = []
+                for i, dist in zip(indices.flatten(), distances.flatten()):
+                    i = int(i)
+                    if not self._matches(self.metadata[i], metadata_filter):
+                        continue
+                    results.append(
+                        {
+                            "index": i,
+                            "similarity": float(np.dot(self.document_vectors[i], query)),
+                            "summary_distance": float(dist),
+                            "metadata": self.metadata[i],
+                        }
+                    )
+                if len(results) >= k or fetch >= self.count:
+                    break
+                fetch = min(self.count, fetch * 4)
+
             results.sort(key=lambda r: -r["similarity"])
-            return results
+            return results[:k]
+
+    def compact(self) -> Dict[str, int]:
+        """Rebuild the index without deleted slots, reclaiming their space.
+
+        Surviving vectors are re-labelled with sequential indices in their
+        original order — callers holding old indices must re-resolve them.
+        """
+        with self.lock:
+            if self.index is None:
+                raise LookupError("The database is empty")
+            before_slots = len(self.document_vectors)
+            keep = [i for i in range(before_slots) if i not in self.deleted]
+
+            summary_vectors = [self.summary_vectors[i] for i in keep]
+            document_vectors = [self.document_vectors[i] for i in keep]
+            metadata = [self.metadata[i] for i in keep]
+
+            index = hnswlib.Index(space="cosine", dim=self.dim)
+            index.init_index(
+                max_elements=max(len(keep), self.INITIAL_CAPACITY), ef_construction=200, M=16
+            )
+            index.set_ef(200)
+            if keep:
+                index.add_items(np.asarray(summary_vectors), np.arange(len(keep)))
+
+            self.index = index
+            self.summary_vectors = summary_vectors
+            self.document_vectors = document_vectors
+            self.metadata = metadata
+            self.deleted = set()
+            return {"before_slots": before_slots, "count": len(keep), "freed": before_slots - len(keep)}
 
     def save(self):
         """Persist atomically: write to temp files, then rename into place.
@@ -479,12 +533,30 @@ async def delete_vector(idx: int, user: str = Depends(get_current_user)):
 async def search(body: SearchQuery, user: str = Depends(get_current_user)):
     with timer() as t:
         try:
-            results = db.search(body.query_vector, body.k)
+            results = db.search(body.query_vector, body.k, metadata_filter=body.filter)
         except LookupError:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="The database is empty") from None
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     return {"results": results, "timestamp": utc_timestamp(), "execution_time": t["elapsed"]}
+
+
+@app.post("/compact/", tags=["CRUD Operations"], summary="Compact Database",
+    description="Rebuild the index without deleted slots, reclaiming their space. "
+    "Surviving vectors are re-labelled with sequential indices in their original order.",
+)
+async def compact_database(user: str = Depends(get_current_user)):
+    with timer() as t:
+        try:
+            result = db.compact()
+        except LookupError:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="The database is empty") from None
+    return {
+        "message": "Database compacted.",
+        **result,
+        "timestamp": utc_timestamp(),
+        "execution_time": t["elapsed"],
+    }
 
 
 @app.post("/save/", tags=["Persistence"], summary="Save Database",

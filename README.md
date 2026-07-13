@@ -58,7 +58,8 @@ All endpoints except `/health/` require an `Authorization: Bearer <token>` heade
 | `GET`    | `/get/{idx}`    | Return the vectors and metadata at an index              |
 | `PUT`    | `/update/{idx}` | Replace the vectors at an index                          |
 | `DELETE` | `/delete/{idx}` | Delete the vectors at an index                           |
-| `POST`   | `/search/`      | k-NN search on summary vectors, re-ranked by document vectors |
+| `POST`   | `/search/`      | k-NN search on summary vectors, re-ranked by document vectors; optional metadata `filter` |
+| `POST`   | `/compact/`     | Rebuild the index without deleted slots (indices are re-labelled) |
 | `POST`   | `/save/`        | Persist the index and vectors to disk                    |
 | `POST`   | `/load/`        | Restore a previously saved database                      |
 | `POST`   | `/shutdown/`    | Shut down the server                                     |
@@ -86,11 +87,11 @@ curl -X POST http://localhost:4440/add/ \
   -H "Content-Type: application/json" \
   -d '{"summary_vector": [0.1, 0.2, 0.3], "document_vector": [0.4, 0.5, 0.6], "metadata": {"title": "Doc 1"}}'
 
-# Search
+# Search (optionally filtered by metadata equality)
 curl -X POST http://localhost:4440/search/ \
   -H "Authorization: Bearer $BEARER_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"query_vector": [0.1, 0.2, 0.3], "k": 5}'
+  -d '{"query_vector": [0.1, 0.2, 0.3], "k": 5, "filter": {"title": "Doc 1"}}'
 ```
 
 ## 🐍 Python Client
@@ -108,11 +109,15 @@ idx = client.add(
     metadata={"title": "Doc 1"},
 )
 
-results = client.search([0.1, 0.2, 0.3], k=5)
+results = client.search([0.1, 0.2, 0.3], k=5, filter={"title": "Doc 1"})
 # [{"index": 0, "similarity": 0.32, "summary_distance": 0.0, "metadata": {"title": "Doc 1"}}]
 
 client.save()  # persist to disk; auto-loaded on the next server start
 ```
+
+The client retries transient failures (429 — including doom-loop blocks —
+502/503/504, and connection errors) with exponential backoff, honouring the
+server's `Retry-After` header.
 
 ## 🐳 Docker Compose Example
 

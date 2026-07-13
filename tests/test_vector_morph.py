@@ -157,6 +157,55 @@ class TestVectorDatabase:
         d = VectorDatabase(data_dir=str(tmp_path / "nothing"))
         assert d.load() is False
 
+    def test_filtered_search(self):
+        d = VectorDatabase()
+        d.add_vector([1.0, 0.0], [1.0, 0.0], metadata={"lang": "en", "year": 2024})
+        d.add_vector([0.9, 0.1], [0.9, 0.1], metadata={"lang": "fr"})
+        d.add_vector([0.8, 0.2], [0.8, 0.2], metadata={"lang": "en", "year": 2025})
+        d.add_vector([0.7, 0.3], [0.7, 0.3])  # no metadata
+
+        results = d.search([1.0, 0.0], k=10, metadata_filter={"lang": "en"})
+        assert {r["index"] for r in results} == {0, 2}
+
+        results = d.search([1.0, 0.0], k=10, metadata_filter={"lang": "en", "year": 2025})
+        assert [r["index"] for r in results] == [2]
+
+        assert d.search([1.0, 0.0], k=10, metadata_filter={"lang": "de"}) == []
+
+    def test_filtered_search_widens_past_initial_fetch(self):
+        # Rare tag on the far side of vector space: the initial oversampled
+        # knn fetch misses it, so the search must widen to the full database.
+        d = VectorDatabase()
+        rng = np.random.default_rng(1)
+        for _ in range(60):
+            v = (rng.random(4) + 1.0).tolist()  # clustered positive vectors
+            d.add_vector(v, v, metadata={"tag": "common"})
+        rare = [-1.0, -1.0, -1.0, -1.0]
+        rare_idx = d.add_vector(rare, rare, metadata={"tag": "rare"})
+
+        results = d.search([1.0, 1.0, 1.0, 1.0], k=1, metadata_filter={"tag": "rare"})
+        assert [r["index"] for r in results] == [rare_idx]
+
+    def test_compact_reclaims_deleted_slots(self):
+        d = VectorDatabase()
+        d.add_vector([1.0, 0.0], [1.0, 0.0], metadata={"n": 0})
+        d.add_vector([0.0, 1.0], [0.0, 1.0], metadata={"n": 1})
+        d.add_vector([0.5, 0.5], [0.5, 0.5], metadata={"n": 2})
+        d.delete_vector(1)
+
+        result = d.compact()
+        assert result == {"before_slots": 3, "count": 2, "freed": 1}
+        assert d.count == 2
+        assert d.deleted == set()
+        # Survivors keep their order and metadata under new sequential indices
+        assert d.metadata == [{"n": 0}, {"n": 2}]
+        results = d.search([0.5, 0.5], k=2)
+        assert {r["index"] for r in results} == {0, 1}
+
+    def test_compact_empty_raises(self):
+        with pytest.raises(LookupError):
+            VectorDatabase().compact()
+
 
 class TestLoopGuard:
     KEY = ("1.2.3.4", "GET", "/get/999")
@@ -287,6 +336,41 @@ class TestAPI:
         assert response.status_code == 200
         assert response.json()["count"] == 1
         assert response.json()["dim"] == 2
+
+    def test_search_with_filter(self, client):
+        client.post(
+            "/add/",
+            json={"summary_vector": vec(1, 0), "document_vector": vec(1, 0), "metadata": {"lang": "en"}},
+            headers=AUTH,
+        )
+        client.post(
+            "/add/",
+            json={"summary_vector": vec(0, 1), "document_vector": vec(0, 1), "metadata": {"lang": "fr"}},
+            headers=AUTH,
+        )
+        response = client.post(
+            "/search/",
+            json={"query_vector": vec(1, 0), "k": 5, "filter": {"lang": "fr"}},
+            headers=AUTH,
+        )
+        assert response.status_code == 200
+        results = response.json()["results"]
+        assert len(results) == 1
+        assert results[0]["metadata"] == {"lang": "fr"}
+
+    def test_compact_endpoint(self, client):
+        add(client, vec(1, 0), vec(1, 0))
+        add(client, vec(0, 1), vec(0, 1))
+        client.delete("/delete/0", headers=AUTH)
+        response = client.post("/compact/", headers=AUTH)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["freed"] == 1
+        assert body["count"] == 1
+        assert client.get("/stats/", headers=AUTH).json()["deleted"] == 0
+
+    def test_compact_empty_is_404(self, client):
+        assert client.post("/compact/", headers=AUTH).status_code == 404
 
     def test_save_and_load_endpoints(self, client):
         add(client, vec(1, 0), vec(1, 0))
